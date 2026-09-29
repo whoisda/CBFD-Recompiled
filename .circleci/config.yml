@@ -62,6 +62,17 @@ jobs:
             xcrun -sdk macosx metal --version
 
       - run:
+          name: Update Homebrew
+          # The Xcode 15.4 image ships a 2024-era Homebrew whose catalogue
+          # predates the sdl3 formula (and the sdl2-compat switch), so a fresh
+          # catalogue is required before installing below. This keeps the
+          # Sonoma host while getting current formulae and arm64_sonoma bottles.
+          no_output_timeout: 15m
+          command: |
+            brew update
+            brew --version
+
+      - run:
           name: Install dependencies
           command: |
             brew install git python3 cmake ninja pkg-config sdl2 sdl3 freetype dylibbundler
