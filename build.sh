@@ -21,6 +21,7 @@ for arg in "$@"; do
     esac
 done
 MACOS=
+CMAKE_OSX_DEPLOYMENT_TARGET=
 if [ "$(uname -s)" = Darwin ]; then
     MACOS=1
     # The decompilation's Makefiles need GNU coreutils (sha1sum --check, split
@@ -35,6 +36,15 @@ if [ "$(uname -s)" = Darwin ]; then
     CC=/usr/bin/clang
     CXX=/usr/bin/clang++
     export CC CXX
+    # Target macOS 14 (Sonoma) by default so the build runs there too, not only
+    # on the macOS it's built on. Override with e.g.
+    #   MACOSX_DEPLOYMENT_TARGET=15.0 ./build.sh
+    # This is honoured by the cmake configures below (N64Recomp and the game).
+    # Homebrew libraries bundled into the app can still raise the minimum (see
+    # host/package_macos.sh, which reports the actual minimum it packaged).
+    : "${MACOSX_DEPLOYMENT_TARGET:=14.0}"
+    export MACOSX_DEPLOYMENT_TARGET
+    CMAKE_OSX_DEPLOYMENT_TARGET="-DCMAKE_OSX_DEPLOYMENT_TARGET=$MACOSX_DEPLOYMENT_TARGET"
 fi
 JOBS=$(nproc 2>/dev/null || sysctl -n hw.ncpu 2>/dev/null || echo 4)
 
@@ -188,7 +198,16 @@ apply_patch tools/rt64 recomp/rt64.patch
 apply_patch "$RMLUI" recomp/rmlui.patch
 
 step "Building the recompiler"
-if [ ! -f tools/N64Recomp/build/build.ninja ]; then
+# On macOS the deployment target is part of the configure: reconfigure when it
+# changed since the last configure (or when never configured with it), so a
+# build directory from before still picks up Sonoma compatibility.
+if [ -n "$MACOS" ]; then
+    if [ ! -f tools/N64Recomp/build/build.ninja ] || \
+       ! grep -q "CMAKE_OSX_DEPLOYMENT_TARGET:[A-Z]*=${MACOSX_DEPLOYMENT_TARGET}$" tools/N64Recomp/build/CMakeCache.txt 2>/dev/null; then
+        # shellcheck disable=SC2086
+        cmake -S tools/N64Recomp -B tools/N64Recomp/build -G Ninja -DCMAKE_BUILD_TYPE=Release $CMAKE_OSX_DEPLOYMENT_TARGET
+    fi
+elif [ ! -f tools/N64Recomp/build/build.ninja ]; then
     cmake -S tools/N64Recomp -B tools/N64Recomp/build -G Ninja -DCMAKE_BUILD_TYPE=Release
 fi
 cmake --build tools/N64Recomp/build --target N64RecompCLI RSPRecomp RecompModTool
@@ -286,8 +305,14 @@ else
     HOST_CXX=clang++
 fi
 if [ ! -f host/build/build.ninja ]; then
+    # shellcheck disable=SC2086
     cmake -S host -B host/build -G Ninja -DCMAKE_C_COMPILER="$HOST_CC" -DCMAKE_CXX_COMPILER="$HOST_CXX" \
-        -DCMAKE_BUILD_TYPE=RelWithDebInfo
+        -DCMAKE_BUILD_TYPE=RelWithDebInfo $CMAKE_OSX_DEPLOYMENT_TARGET
+elif [ -n "$MACOS" ] && ! grep -q "CMAKE_OSX_DEPLOYMENT_TARGET:[A-Z]*=${MACOSX_DEPLOYMENT_TARGET}$" host/build/CMakeCache.txt 2>/dev/null; then
+    step "Reconfiguring the game for macOS $MACOSX_DEPLOYMENT_TARGET or later"
+    # shellcheck disable=SC2086
+    cmake -S host -B host/build -G Ninja -DCMAKE_C_COMPILER="$HOST_CC" -DCMAKE_CXX_COMPILER="$HOST_CXX" \
+        -DCMAKE_BUILD_TYPE=RelWithDebInfo $CMAKE_OSX_DEPLOYMENT_TARGET
 fi
 cmake --build host/build
 

@@ -163,6 +163,17 @@ To turn it into a standalone `ConkerRecomp.app` that runs without Homebrew (as t
 release workflow does), run `sh host/package_macos.sh` after `brew install
 dylibbundler`. The app ends up in `host/build/`.
 
+The build targets macOS 14 (Sonoma) by default, so it also runs on Sonoma, not
+only on the macOS it was built on. There is a
+[CircleCI workflow](.circleci/config.yml) that builds exactly that on a Sonoma
+host: add the repository as a CircleCI project, set the `ROM_REPO` and
+`ROM_REPO_TOKEN` environment variables there (same layout as the GitHub
+workflows' secrets: a private repository holding only `baserom.us.z64`, plus a
+read-only token for it), and the ready-to-play `ConkerRecomp-macOS-Sonoma.zip`
+appears under the job's Artifacts tab. Like the GitHub macOS package, the app
+is not signed with an Apple developer ID (ad-hoc signature only): the first
+time, right-click it in Finder, choose Open, then choose Open again.
+
 ### Updating
 
 ```sh

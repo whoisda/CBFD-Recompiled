@@ -1,0 +1,139 @@
+# CircleCI: macOS build that runs on macOS 14 (Sonoma) and later.
+#
+# Why this exists: the GitHub release workflow builds on a macos-15 runner, so
+# that app (and the Homebrew libraries bundled in it) requires macOS 15+. This
+# workflow instead builds on a Sonoma host (Xcode 15.4 image = macOS 14.3.1)
+# with MACOSX_DEPLOYMENT_TARGET=14.0 (see build.sh), so the resulting
+# ConkerRecomp.app runs on Sonoma. The app is ad-hoc signed only (no Apple
+# Developer ID, no notarization): on first launch, right-click it > Open, then
+# choose Open, or pick "Open Anyway" in System Settings > Privacy & Security.
+#
+# Setup (once):
+#   1. In CircleCI, add this repository as a project (it picks up this file).
+#   2. The build recompiles the game from your US ROM, which is never committed.
+#      Make a PRIVATE repository holding only baserom.us.z64 at its root, then
+#      in the CircleCI project go to Project Settings > Environment Variables
+#      and add:
+#        ROM_REPO         owner/name of the private ROM repository
+#        ROM_REPO_TOKEN   a fine-grained personal access token with read-only
+#                         "Contents" access to that repository alone
+#      (Same layout as the GitHub workflows' ROM_REPO / ROM_REPO_TOKEN secrets.)
+#   3. Push: the build runs, and ConkerRecomp-macOS-Sonoma.zip appears under the
+#      job's Artifacts tab.
+#
+# No third-party orbs are used: checkout, run and store_artifacts only.
+version: 2.1
+
+jobs:
+  build-macos-sonoma:
+    macos:
+      # Xcode 15.4 runs on a Sonoma (macOS 14.3.1) host, so Homebrew bottles and
+      # the SDK target Sonoma too. Newer Xcode images run on Sequoia/Tahoe
+      # hosts, whose libraries can require macOS 15+ even with a lower
+      # deployment target. Do NOT "upgrade" this version without checking the
+      # packaged app's LSMinimumSystemVersion (host/package_macos.sh prints it
+      # as "Packaged ... (macOS X.Y or later)").
+      xcode: "15.4.0"
+    # Apple Silicon. The app is arm64-only, like the GitHub macOS release
+    # (Intel Macs on Sonoma are not covered; they would need an x86_64 build).
+    resource_class: m4pro.medium
+    environment:
+      # What the app requires at minimum. build.sh defaults to this anyway;
+      # setting it here makes the requirement explicit and covers every cmake
+      # invocation (N64Recomp tools + game) via -DCMAKE_OSX_DEPLOYMENT_TARGET.
+      MACOSX_DEPLOYMENT_TARGET: "14.0"
+      # Less noise / fewer surprises from Homebrew in CI.
+      HOMEBREW_NO_AUTO_UPDATE: "1"
+      HOMEBREW_NO_INSTALL_CLEANUP: "1"
+      GIT_TERMINAL_PROMPT: "0"
+
+    steps:
+      - checkout
+
+      - run:
+          name: Show Xcode and SDK versions
+          command: |
+            xcodebuild -version
+            xcrun --show-sdk-path
+            sw_vers
+            # RT64 compiles its Metal shaders with Xcode's metal compiler; Xcode
+            # 15 bundles it (no separate Metal Toolchain download needed, unlike
+            # Xcode 26+). Fail early with a clear message if it is missing.
+            xcrun -sdk macosx metal --version
+
+      - run:
+          name: Install dependencies
+          command: |
+            brew install git python3 cmake ninja pkg-config sdl2 sdl3 freetype dylibbundler
+            # build.sh checks for these the same way on macOS.
+            for cmd in git python3 cmake ninja pkg-config xcrun; do
+              command -v "$cmd" >/dev/null 2>&1 || { echo "missing: $cmd"; exit 1; }
+            done
+            pkg-config --exists sdl2 || { echo "missing: sdl2"; exit 1; }
+            pkg-config --exists freetype2 || { echo "missing: freetype2"; exit 1; }
+            command -v dylibbundler >/dev/null 2>&1 || { echo "missing: dylibbundler"; exit 1; }
+
+      - run:
+          name: Get the ROM
+          command: |
+            if [ -n "$ROM_REPO" ] && [ -n "$ROM_REPO_TOKEN" ]; then
+              git clone -q --depth 1 "https://x-access-token:$ROM_REPO_TOKEN@github.com/$ROM_REPO.git" rom-src
+            elif [ -f conker/baserom.us.z64 ]; then
+              echo "ROM_REPO not set; using conker/baserom.us.z64 already in the checkout."
+              mkdir -p rom-src
+              cp conker/baserom.us.z64 rom-src/baserom.us.z64
+            else
+              echo "No ROM available."
+              echo "Set the ROM_REPO and ROM_REPO_TOKEN environment variables (see the"
+              echo "comments at the top of .circleci/config.yml), or place your US ROM"
+              echo "at conker/baserom.us.z64 before building."
+              exit 1
+            fi
+            ls -la rom-src/baserom.us.z64
+
+      - run:
+          name: Build the game
+          # The build itself takes a while (the recompiled game is a lot of C).
+          no_output_timeout: 30m
+          command: |
+            ./build.sh rom-src/baserom.us.z64 < /dev/null
+            # What the binary actually requires (build.sh targets macOS 14.0).
+            otool -l host/build/ConkerRecomp | grep -A2 LC_BUILD_VERSION | head -6 || true
+
+      - run:
+          name: Package ConkerRecomp.app (unsigned, ad-hoc signature only)
+          command: |
+            out=package/ConkerRecompiled
+            mkdir -p "$out"
+            sh host/package_macos.sh "$out"
+            cp LICENSE "$out/"
+            # Playing instructions for an unsigned build: right-click > Open.
+            # (The stock README.txt says "macOS 15 or later"; this build targets Sonoma.)
+            sed 's/macOS 15 or later/macOS 14 (Sonoma) or later/' .github/release/README.txt > "$out/README.txt"
+            cat >> "$out/README.txt" <<'EOF'
+
+            CircleCI Sonoma build: this app is not signed with an Apple developer
+            ID (it carries only an ad-hoc signature, which Apple Silicon requires
+            to run anything at all). The first time, macOS will block it: in Finder,
+            right-click ConkerRecomp.app > Open, then choose Open. Afterwards it
+            opens normally. Alternatively, open it once, then choose Open Anyway
+            in System Settings > Privacy & Security; or run
+            xattr -dr com.apple.quarantine ConkerRecomp.app in Terminal first.
+            EOF
+            # The game-data guard, as in the release workflow: no ROM may ship in the app.
+            find "$out/ConkerRecomp.app" -type f -exec sh -c 'head -c 4 "$1" | od -An -tx1 | tr -d " \n" | grep -q "^80371240$" && { echo "ROM found in package: $1"; exit 1; }' _ {} \;
+            # Plain files only (no ._ extended-attribute entries); the ad-hoc
+            # signature lives inside the app bundle itself.
+            ditto -c -k --norsrc --noextattr --noacl --keepParent "$out" "package/ConkerRecomp-macOS-Sonoma.zip"
+            ls -la package/
+            # Report what the app actually requires (must say 14.x for Sonoma).
+            otool -l "$out/ConkerRecomp.app/Contents/MacOS/ConkerRecomp" | grep -A3 LC_BUILD_VERSION | head -8 || true
+
+      - store_artifacts:
+          path: package/ConkerRecomp-macOS-Sonoma.zip
+          destination: ConkerRecomp-macOS-Sonoma.zip
+
+workflows:
+  build:
+    jobs:
+      - build-macos-sonoma
