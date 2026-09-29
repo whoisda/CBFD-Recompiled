@@ -110,16 +110,16 @@ jobs:
             # Playing instructions for an unsigned build: right-click > Open.
             # (The stock README.txt says "macOS 15 or later"; this build targets Sonoma.)
             sed 's/macOS 15 or later/macOS 14 (Sonoma) or later/' .github/release/README.txt > "$out/README.txt"
-            cat >> "$out/README.txt" <<'EOF'
-
-            CircleCI Sonoma build: this app is not signed with an Apple developer
-            ID (it carries only an ad-hoc signature, which Apple Silicon requires
-            to run anything at all). The first time, macOS will block it: in Finder,
-            right-click ConkerRecomp.app > Open, then choose Open. Afterwards it
-            opens normally. Alternatively, open it once, then choose Open Anyway
-            in System Settings > Privacy & Security; or run
-            xattr -dr com.apple.quarantine ConkerRecomp.app in Terminal first.
-            EOF
+            printf '%s\n' \
+              '' \
+              'CircleCI Sonoma build: this app is not signed with an Apple developer' \
+              'ID (it carries only an ad-hoc signature, which Apple Silicon requires' \
+              'to run anything at all). The first time, macOS will block it: in Finder,' \
+              'right-click ConkerRecomp.app > Open, then choose Open. Afterwards it' \
+              'opens normally. Alternatively, open it once, then choose Open Anyway' \
+              'in System Settings > Privacy & Security; or run' \
+              'xattr -dr com.apple.quarantine ConkerRecomp.app in Terminal first.' \
+              >> "$out/README.txt"
             # The game-data guard, as in the release workflow: no ROM may ship in the app.
             find "$out/ConkerRecomp.app" -type f -exec sh -c 'head -c 4 "$1" | od -An -tx1 | tr -d " \n" | grep -q "^80371240$" && { echo "ROM found in package: $1"; exit 1; }' _ {} \;
             # Plain files only (no ._ extended-attribute entries); the ad-hoc
