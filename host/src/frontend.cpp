@@ -56,6 +56,33 @@ namespace {
     std::mutex title_mutex;
     std::string pending_title;
 
+    // Prints what SDL says about a controller (name, GUID, mapping, device), for controller reports.
+    void print_controller(int index) {
+        char guid[64];
+        SDL_JoystickGetGUIDString(SDL_JoystickGetDeviceGUID(index), guid, sizeof(guid));
+        const char* name = SDL_GameControllerNameForIndex(index);
+        const char* path = SDL_GameControllerPathForIndex(index);
+        char* mapping = SDL_GameControllerMappingForDeviceIndex(index);
+        std::printf("[controller] connected: %s (GUID %s, device %s)\n  mapping: %s\n", name ? name : "?", guid,
+            path ? path : "?", mapping ? mapping : "none");
+        SDL_free(mapping);
+    }
+
+    // Watches controllers connecting: each is printed, and its C-buttons remapped if they need it
+    // (pad_mappings.cpp).
+    int SDLCALL watch_controllers(void*, SDL_Event* event) {
+        switch (event->type) {
+        case SDL_JOYDEVICEADDED:
+            conker::pad_mappings::on_device_added();
+            break;
+        case SDL_CONTROLLERDEVICEADDED:
+            print_controller(event->cdevice.which);
+            break;
+        }
+        std::fflush(stdout);
+        return 1;
+    }
+
     void* create_gfx() {
         SDL_SetHint(SDL_HINT_WINDOWS_DPI_AWARENESS, "permonitorv2");
         SDL_SetHint(SDL_HINT_GAMECONTROLLER_USE_BUTTON_LABELS, "0");
@@ -63,6 +90,16 @@ namespace {
         SDL_SetHint(SDL_HINT_JOYSTICK_HIDAPI_PS5_RUMBLE, "1");
         SDL_SetHint(SDL_HINT_MOUSE_FOCUS_CLICKTHROUGH, "1");
         SDL_SetHint(SDL_HINT_JOYSTICK_ALLOW_BACKGROUND_EVENTS, "1");
+#if defined(__linux__)
+        // Nintendo's online classic controllers (the N64 one, and pads like the 8BitDo 64 in its
+        // Switch mode) through the kernel's driver, not SDL's HIDAPI one, so there's one layout for
+        // pad_mappings.cpp to make the C-buttons the right stick of (issue #28): SDL3, under Linux
+        // distributions' sdl2-compat, maps both as a Switch pad, and HIDAPI's puts one C-button on
+        // an axis. Windows keeps SDL's default: its SDL is ours (2.26), and without HIDAPI the pad
+        // may have no mapping there. The SDL_JOYSTICK_HIDAPI_NINTENDO_CLASSIC environment variable
+        // still overrides this.
+        SDL_SetHint(SDL_HINT_JOYSTICK_HIDAPI_NINTENDO_CLASSIC, "0");
+#endif
         // Debugging aid: CONKER_NO_CONTROLLER=1 ignores game controllers, e.g. for test
         // runs while someone else is playing with the controller on the same machine.
         Uint32 subsystems = SDL_INIT_VIDEO;
@@ -72,6 +109,24 @@ namespace {
         if (SDL_Init(subsystems) != 0) {
             std::fprintf(stderr, "[frontend] SDL_Init failed: %s\n", SDL_GetError());
         }
+        SDL_version sdl_version;
+        SDL_GetVersion(&sdl_version);
+        std::printf("[frontend] SDL %d.%d.%d\n", sdl_version.major, sdl_version.minor, sdl_version.patch);
+        // N64 pads and adapters SDL has no mapping for, or maps as other pads (assets/controllerdb.txt).
+        // Only mappings, so the controllers connected at start are picked up when they're opened.
+        const std::u8string controller_db = recompui::file::get_asset_path("controllerdb.txt").u8string();
+        const int controller_mappings = SDL_GameControllerAddMappingsFromFile(reinterpret_cast<const char*>(controller_db.c_str()));
+        if (controller_mappings < 0) {
+            std::fprintf(stderr, "[frontend] couldn't load the controller mappings: %s\n", SDL_GetError());
+        } else {
+            std::printf("[frontend] controller mappings: %d added\n", controller_mappings);
+        }
+        SDL_AddEventWatch(watch_controllers, nullptr);
+        // The controllers connected at start were announced before the watch.
+        for (int index = 0; index < SDL_NumJoysticks(); index++) {
+            print_controller(index);
+        }
+        conker::pad_mappings::fix_all();
         // The file dialogs (Load ROM, mods). Only after SDL: on macOS, NFD_Init creates the
         // application object if it doesn't exist yet and makes it an accessory app, and SDL
         // then leaves it that way (no Dock icon, and the window opens behind the terminal).
@@ -115,6 +170,8 @@ namespace {
 
     void update_gfx(void*) {
         recompinput::handle_events();
+        conker::texture_packs::update_unpacking();
+        conker::fps_counter::update();
         std::string title;
         {
             std::lock_guard lock(title_mutex);
@@ -197,6 +254,12 @@ namespace {
         // would reach up into the title.
         options->set_bottom(10.0f, recompui::Unit::Percent);
         recompui::update_game_mod_id(game.mod_game_id);
+        // The runtime has opened the mods by now: turn on the texture pack chosen in the settings.
+        conker::texture_packs::apply();
+        // And unpack the GLideN64 packs not unpacked yet, showing the progress over the launcher.
+        conker::texture_packs::unpack_gliden64_packs();
+        // recompui's UI exists now: the FPS counter can make its own.
+        conker::fps_counter::on_ui_ready();
         options->add_start_game_or_load_rom_option();
         version_option = options->add_option("Version", on_version_selected);
         add_rom_option = options->add_option("Add ROM", on_add_rom_selected);
@@ -224,7 +287,8 @@ namespace {
 }
 
 void conker::frontend::on_vi() {
-    recompinput::update_rumble();
+    conker::rumble::update();
+    conker::pad_mappings::update();
 }
 
 // Controller ports. recompinput's single-player mode reports all four ports as plugged
@@ -329,8 +393,25 @@ namespace {
         return controller_field_analog(controller, field) > 0.0f;
     }
 
-    // One controller (or none) and/or the keyboard, through the single-player bindings.
-    void read_port(SDL_GameController* controller, bool keyboard, uint16_t* buttons, float* x, float* y) {
+    // The keyboard and the mouse are player 1's: their bindings count on port 1 only. Mouse buttons
+    // can be bound with the keyboard's controls or, in single player, the controller's.
+    bool is_keyboard_or_mouse(const recompinput::InputField& field) {
+        return field.input_type == recompinput::InputType::Keyboard || field.input_type == recompinput::InputType::Mouse;
+    }
+
+    // A binding to the right stick (either axis, either way).
+    bool is_right_stick(const recompinput::InputField& field) {
+        if (field.input_type != recompinput::InputType::ControllerAnalog) {
+            return false;
+        }
+        const int axis = std::abs(field.input_id) - 1;
+        return axis == SDL_CONTROLLER_AXIS_RIGHTX || axis == SDL_CONTROLLER_AXIS_RIGHTY;
+    }
+
+    // One controller (or none) and/or the keyboard and mouse, through the single-player bindings.
+    // With free_stick (Right Stick: Free Camera, while the stick turns the camera), the controller's
+    // right stick presses no button: it turns the camera instead (mouse_camera.cpp).
+    void read_port(SDL_GameController* controller, bool keyboard, bool free_stick, uint16_t* buttons, float* x, float* y) {
         using recompinput::GameInput;
         static constexpr uint16_t button_values[] = {
             0x8000, 0x4000, 0x2000, 0x0020, 0x0010, 0x1000, 0x0008,
@@ -346,7 +427,13 @@ namespace {
         auto cont_analog = [&](GameInput input) {
             float v = 0.0f;
             for (size_t i = 0; i < recompinput::num_bindings_per_input; i++) {
-                v += controller_field_analog(controller, binding(cont_profile, input, i));
+                const recompinput::InputField& field = binding(cont_profile, input, i);
+                if (field.input_type == recompinput::InputType::Mouse) {
+                    v += keyboard ? recompinput::get_input_analog(0, field) : 0.0f;
+                }
+                else if (controller != nullptr) {
+                    v += controller_field_analog(controller, field);
+                }
             }
             return std::clamp(v, 0.0f, 1.0f);
         };
@@ -354,7 +441,7 @@ namespace {
             float v = 0.0f;
             for (size_t i = 0; i < recompinput::num_bindings_per_input; i++) {
                 const recompinput::InputField& field = binding(kb_profile, input, i);
-                if (field.input_type == recompinput::InputType::Keyboard) {
+                if (is_keyboard_or_mouse(field)) {
                     v += recompinput::get_input_analog(0, field);
                 }
             }
@@ -368,12 +455,18 @@ namespace {
             GameInput input = (GameInput)((size_t)GameInput::N64_BUTTON_START + b);
             bool pressed = false;
             for (size_t i = 0; i < recompinput::num_bindings_per_input; i++) {
-                if (controller != nullptr && cont_profile >= 0) {
-                    pressed |= controller_field_digital(controller, binding(cont_profile, input, i));
+                if (cont_profile >= 0) {
+                    const recompinput::InputField& field = binding(cont_profile, input, i);
+                    if (field.input_type == recompinput::InputType::Mouse) {
+                        pressed |= keyboard && recompinput::get_input_digital(0, field);
+                    }
+                    else if (controller != nullptr && !(free_stick && is_right_stick(field))) {
+                        pressed |= controller_field_digital(controller, field);
+                    }
                 }
                 if (keyboard && kb_profile >= 0) {
                     const recompinput::InputField& field = binding(kb_profile, input, i);
-                    if (field.input_type == recompinput::InputType::Keyboard) {
+                    if (is_keyboard_or_mouse(field)) {
                         pressed |= recompinput::get_input_digital(0, field);
                     }
                 }
@@ -416,10 +509,15 @@ namespace {
         }
         if (!recompinput::game_input_disabled()) {
             // Port 1 has the keyboard, and its controller once one has pressed a button.
-            read_port(port < count ? controllers[port] : nullptr, port == 0, buttons, x, y);
+            read_port(port < count ? controllers[port] : nullptr, port == 0,
+                port == 0 && conker::mouse_camera::stick_turns_camera(), buttons, x, y);
         }
         return true;
     }
+}
+
+int conker::frontend::port_controllers(std::array<SDL_GameController*, max_ports>& out) {
+    return get_port_controllers(out);
 }
 
 ultramodern::input::connected_device_info_t conker::frontend::get_connected_device_info(int controller_num) {
@@ -460,12 +558,15 @@ void conker::frontend::init(recomp::GameEntry& game) {
     recompui::register_ui_exports();
     recompinput::players::set_single_player_mode(true);
     conker::init_config();
+
+    // Texture packs (texture_packs.cpp).
+    conker::texture_packs::register_type();
 }
 
 void conker::frontend::set_callbacks(recomp::Configuration& cfg) {
     cfg.renderer_callbacks.create_render_context = create_render_context;
     cfg.gfx_callbacks = { create_gfx, create_window, update_gfx };
-    cfg.input_callbacks = { poll_inputs, get_port_input, recompinput::set_rumble,
+    cfg.input_callbacks = { poll_inputs, get_port_input, conker::rumble::set,
                             conker::get_connected_device_info };
     cfg.error_handling_callbacks.message_box = recompui::message_box;
 }
