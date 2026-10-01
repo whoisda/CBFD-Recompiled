@@ -18,6 +18,8 @@
 #include "recomp.h"
 #include "ultramodern/config.hpp"
 
+#include "conker.hpp"
+
 // The game window (frontend.cpp).
 extern SDL_Window* window;
 
@@ -144,6 +146,101 @@ extern "C" void conker_emit_sprite_texrect(uint8_t* rdram, recomp_context* ctx) 
         ((uint32_t)(lrx & 0xFFFF) << 16) | (uint32_t)(lry & 0xFFFF));
     put_command(rdram, dl, (s << 16) | t, (dsdx << 16) | dtdy);
     MEM_W(0x100, sp) = (int32_t)dl;
+}
+
+// Speech bubbles (issue #59). func_15095D34 draws each piece of a cutscene's speech bubble (its
+// halves, mirrored, and its tail) as a G_TEXRECT: the left edge from $f12 (D_800D2C78, truncated
+// at 0x15095E78), the right edge that plus a width (its 5th argument and D_800D2C84 less one:
+// $f12 is 1.0 by then, 0x15095F18), the texture start from $f12's fraction. Like the sprites, a piece past the
+// screen's left edge is clamped to 0 and its texture moved on, so a bubble near the edge was cut at
+// the 4:3 edge in widescreen, the widened picture beside it.
+//
+// In widescreen a piece whose left edge is near or past the screen's is drawn that many whole
+// pixels to the right (its left edge, which the right one follows; whole pixels, so the texture
+// start is the same), which the game doesn't clamp, and its rectangle is then moved back as RT64's
+// extended one, whose coordinates can be negative. The game writes the corners in 12 bits, so on
+// very wide screens a piece far to the right has its right edge wrapped past 1024 pixels; that one
+// is unwrapped and rewritten the same way.
+//
+// The extended GBI has to be enabled in the frame before that, and the bubbles write no sync to
+// put the enable in. RT64 keeps it on from the enable to the end of the frame, so it's enabled
+// early, in place of the pipe sync each camera's pass starts with; the bubbles are only moved in
+// frames where that happened.
+namespace {
+    constexpr float bubble_margin = 8.0f; // pixels kept right of the screen's left edge
+    constexpr uint32_t bubble_texrect = 0xE4; // G_TEXRECT
+    bool extended_enabled = false;
+    gpr bubble_dl_start = 0;
+    int32_t bubble_shift = 0;
+}
+
+// func_1501878C, as it starts the frame's display list.
+extern "C" void conker_frame_dl_begin(uint8_t* rdram, recomp_context* ctx) {
+    extended_enabled = false;
+    conker::cutscene_aspect::update(rdram);
+#if defined(CONKER_RT64)
+    conker::fps_counter::game_frame();
+#endif
+}
+
+// func_15019464, just after func_1501A490 wrote a pipe sync and the camera's scissor ($v0 after them).
+extern "C" void conker_camera_pass_sync(uint8_t* rdram, recomp_context* ctx) {
+    gpr sync = ctx->r2 - 16;
+    if ((uint32_t)MEM_W(0, sync) != 0xE7000000 || MEM_W(4, sync) != 0) {
+        return;
+    }
+    put_command(rdram, sync, (rt64_hook_opcode << 24) | rt64_hook_magic, (rt64_hook_op_enable << 28) | rt64_extended_opcode);
+    extended_enabled = true;
+}
+
+// func_15095D34, after $f12 (the piece's left edge) is loaded; its display list ($a0) is at $sp + 0x88.
+extern "C" void conker_bubble_begin(uint8_t* rdram, recomp_context* ctx) {
+    bubble_dl_start = 0;
+    bubble_shift = 0;
+    if (!extended_enabled || widescreen_ratio() <= 1.0f) {
+        return;
+    }
+    const gpr sp = ctx->r29;
+    bubble_dl_start = (gpr)MEM_W(0x88, sp);
+    if (ctx->f12.fl < bubble_margin) {
+        bubble_shift = (int32_t)std::ceil(bubble_margin - ctx->f12.fl);
+        ctx->f12.fl += (float)bubble_shift;
+    }
+}
+
+// At its return: $v0 is the end of what it wrote.
+extern "C" void conker_bubble_end(uint8_t* rdram, recomp_context* ctx) {
+    const gpr start = bubble_dl_start;
+    const int32_t shift = bubble_shift;
+    bubble_dl_start = 0;
+    bubble_shift = 0;
+    if (start == 0) {
+        return;
+    }
+    const gpr end = ctx->r2;
+    for (gpr cmd = start; cmd + 24 <= end && end - start <= 0x40; cmd += 8) {
+        const uint32_t w0 = (uint32_t)MEM_W(0, cmd);
+        if ((w0 >> 24) != bubble_texrect || ((uint32_t)MEM_W(8, cmd) >> 24) != 0xE1 || ((uint32_t)MEM_W(16, cmd) >> 24) != 0xF1) {
+            continue;
+        }
+        const uint32_t w1 = (uint32_t)MEM_W(4, cmd);
+        int32_t lrx = (int32_t)((w0 >> 12) & 0xFFF), lry = (int32_t)(w0 & 0xFFF);
+        int32_t ulx = (int32_t)((w1 >> 12) & 0xFFF), uly = (int32_t)(w1 & 0xFFF);
+        const uint32_t tile = (w1 >> 24) & 0x7;
+        if (lrx < ulx) {
+            lrx += 0x1000; // past the 12 bits
+        } else if (shift == 0) {
+            break; // drawn as the game wrote it
+        }
+        ulx -= shift * 4;
+        lrx -= shift * 4;
+        const uint32_t st = (uint32_t)MEM_W(12, cmd), steps = (uint32_t)MEM_W(20, cmd);
+        gpr dl = cmd;
+        put_command(rdram, dl, (rt64_extended_opcode << 24) | g_ex_texrect_v1, tile | (g_ex_origin_none << 3) | (g_ex_origin_none << 15));
+        put_command(rdram, dl, ((uint32_t)(ulx & 0xFFFF) << 16) | (uint32_t)(uly & 0xFFFF), ((uint32_t)(lrx & 0xFFFF) << 16) | (uint32_t)(lry & 0xFFFF));
+        put_command(rdram, dl, st, steps);
+        break;
+    }
 }
 
 // func_151D5E90 (and func_151D6418) draw a saved copy of the frame, such as the
@@ -437,12 +534,33 @@ extern "C" void conker_widen_frustum(uint8_t* rdram, recomp_context* ctx) {
     write_float(rdram, camera, 0x9C, -s);
 }
 
+// func_151103C8 fills the camera's view with its background colour (D_800DBEA8) before it's drawn:
+// from its left bound to its right one less a pixel (290 - 1 for a camera across the frame, 289 in
+// fill mode's inclusive coordinates, so the fill ends just at the scissor's edge). RT64 lines a
+// rectangle that reaches the scissor's edge up with the window's, so in widescreen its last column
+// went out to the window's right side. In play the widened 3D covers it; on the screens before the
+// N64 logo, which draw only a picture over the 4:3 frame, it showed as a thin blue line near the
+// right edge. At 0x15110458, just before the fill ($a3 its right edge), a fill that reaches the edge
+// ends a pixel short, inside the frame: the picture or the 3D drawn over it covers that pixel.
+extern "C" void conker_camera_background_fill(uint8_t* rdram, recomp_context* ctx) {
+    if (widescreen_ratio() <= 1.0f) {
+        return;
+    }
+    const int32_t frame_width = MEM_W(0, (gpr)(int32_t)0x800BE620); // D_800BE620
+    const int32_t right = (int32_t)ctx->r7;
+    if (right >= frame_width - 3) {
+        ctx->r7 = (gpr)(int64_t)(frame_width - 4);
+    }
+}
+
 // updateCullScales_1510B958 sets the scale that the game's other culls (the level's
 // pieces among them: func_150A5378, func_150A6210, func_1510AEE0) multiply a
 // view-space x by before comparing it with the depth: a point is kept while
 // |x| * scale <= depth, the 4:3 view. At its return, divide it by how much wider
 // the window is, so they keep what the widened view shows.
 extern "C" void conker_widen_cull_scale(uint8_t* rdram, recomp_context* ctx) {
+    // Camera: Field of View first ($v0 is the camera).
+    conker::field_of_view::adjust_cull_scales(rdram, ctx->r2);
     const float ratio = widescreen_ratio();
     if (ratio <= 1.0f || no_cull_widen()) {
         return;

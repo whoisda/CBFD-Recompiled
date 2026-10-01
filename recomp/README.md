@@ -174,6 +174,26 @@ Runs before N64Recomp.
   low, and the camera code's saved registers came back as garbage (a spinning
   camera, then a crash in `func_1512BB10` shortly after Hungover starts).
   `prepare_elf.py` warns about any such fall-through entry.
+- Makes `func_10008CE8`'s busy-wait yield (issue #66). It starts a song on a
+  sequence player: it stops the player, then counts up to 2,000,000 (and then
+  4,000,000) until the audio thread reports it stopped. On the N64 the audio
+  thread preempts the loop; the runtime switches game threads only when one
+  waits or yields, so the loop ran out with the player still playing, and the
+  new song went unplayed (the bar's music and chatter played on after loading a
+  save from the menu a game over returns to). A hook at the head of each loop
+  (`conker_spin_wait_pass`, `host/src/ultra_extras.cpp`) yields for up to 1 ms
+  and counts it as the ~3,000 passes the N64 would make in that time, so the
+  loop still gives up after about as long.
+- Makes a song just started read as playing (issue #66). Starting one only
+  queues an event for the audio thread, and the player reads as stopped until
+  the audio thread has taken it up, which here can be a frame or more later. The
+  game's music manager then took the player for free while its song played on:
+  the outside ambience went on in the bar, later songs went to the wrong
+  players, and in the stone dragon's mouth the level's music played on, very
+  loud. Waiting for the audio thread when the song starts doesn't work (it takes
+  the song up only once the game goes on), so a player whose song was just
+  started reads as playing until it plays, is stopped, or 500 ms pass
+  (`conker_song_started`, `conker_song_state`, `conker_song_stopped`).
 
 ## Local changes to the tools
 
@@ -219,9 +239,18 @@ text and data. Conker's two builds ("F3DEXBG.NoN fifo 2.08" and "F3DEX.NoN fifo
 
 RT64's shaders can't see those normals, so lighting is computed on the CPU into
 the vertex colours (`RSP::lightVerticesCBFD`), and `G_LIGHTING` is hidden from
-the shaders. Texture generation (`G_TEXTURE_GEN`), which needs the same normals,
-is disabled for now, so environment-mapped surfaces render without their
-reflection texture.
+the shaders. The point lights' positions are in clip space, as GLideN64 has
+them: each vertex is transformed by the modelview and projection, then scaled by
+the coordinate modifier, before its distance to a light is measured (with the
+untransformed position, the lights missed what they light: the lantern and walls
+outside the bar, the bar's inside, the N64 logo). Texture generation
+(`G_TEXTURE_GEN`, environment mapping: the gold of the Rareware logo, glass),
+which needs the same normals, is done on the CPU too
+(`RSP::textureGenVerticesCBFD`): each vertex's normal against the look-at
+vectors, turned into model space as the lights' directions are, gives its texture
+coordinates, written into the vertex's s and t (32 times the generated
+coordinate, so the texture scale then applies as it does with texture
+generation), and `G_TEXTURE_GEN` is hidden from the shaders as well.
 
 The patch also changes widescreen. RT64 widens a projection only if its
 scissor covers the whole width of its framebuffer's combined scissor. Conker's
@@ -253,6 +282,20 @@ the same three commands as the game's `G_TEXRECT`. The enable goes where the
 sprite's pipe sync was, so the display lists don't grow; they're allocated to
 fit what the game writes.
 
+Cutscene speech bubbles (`func_15095D34`, issue #59) are clamped at the screen's
+left edge the same way. A piece near or past it is drawn that many whole pixels
+to the right, so the game doesn't clamp it, and moved back as an extended
+rectangle. They write no sync to hold the enable, so it's put early in the
+frame, in place of the pipe sync each camera's pass starts with.
+
+A camera's background fill (`func_151103C8`, its colour under everything it
+draws) ends exactly at the scissor's right edge, and RT64 lines such a rectangle
+up with the window's: its last column went out to the window's right side. The
+widened 3D covers it in play, but on the screens before the N64 logo, which draw
+only a picture over the 4:3 frame, it showed as a thin blue line near the right
+edge. In widescreen that fill ends a pixel short, inside the frame
+(`conker_camera_background_fill`).
+
 The patch also changes frame interpolation (a frame rate above the game's 30).
 RT64 draws frames between the game's by pairing each transform with last
 frame's; without help it guesses, from draw calls that look alike. Conker's
@@ -273,6 +316,11 @@ order drawn. In RT64:
   view matrix: lerping the view's translation while the camera turns moves the
   in-between camera off its path.
 - vertex motion is interpolated only if it's plausible (under 64 units a frame).
+- a camera cut isn't interpolated (`RigidBody::updateCameraCut`). A game that doesn't
+  say how its camera interpolates gets it always interpolated, so the frames between
+  two cutscene shots showed the camera partway from one to the other, inside the
+  scenery (issue #59). A cut is a camera moving over 150 units or turning over 50
+  degrees in one game frame, and four times as far as the frame before.
 
 A character's shadow (`func_15186794`) is the ground under it, clipped anew
 every frame and drawn with the shadow's texture projected onto it from the
@@ -282,6 +330,49 @@ last frame's projection (a perspective map from world position to texture
 coordinates, by least squares) and takes each vertex's coordinates last frame
 from it, if the fit is close, covers the texture and moves no vertex more than
 a quarter of the texture.
+
+Texture packs named for Rice (issue #63): GLideN64 and Rice Video name each
+replacement by its texture's Rice hash (`<name>#<crc>#<format>#<size>[#<palette
+crc>]_all.png`), which RT64 can only use through an `rt64.json` pairing it with
+RT64's own hash, made from textures dumped while playing (its `texture_hasher`
+tool). The patch works the Rice hash out live instead
+(`src/hle/rt64_rice_hash.cpp`): a pack whose database's auto path is Rice keeps
+its files by Rice hash (`ReplacementDatabase::resolvePaths`), and the first time
+a texture is seen while one is loaded (`TextureManager::checkRiceReplacement`),
+its Rice names are worked out from the RDRAM its load read, as `dumpTexture`
+dumps it and `texture_hasher` hashes it. The texture cache
+(`TextureCache::addRiceReplacement`) then gives the texture that file, unless a
+database already replaces it; a texture uploaded before the pack was loaded is
+checked again. GLideN64 names a palette only for CI textures, but Conker loads a
+palette for some RGBA ones too, so both names are tried. The host unpacks a
+GLideN64 cache (`.htc`) in the mods folder into such a pack when the launcher
+opens or the Mods menu rescans the folder (`host/src/gliden64_packs.cpp`).
+
+`rt64_rice_hash.cpp` is under the **GPL, version 2 or later**, unlike the rest of
+RT64 (MIT): its hashing is `texture_hasher`'s, which RT64 keeps under the GPL
+because it imitates GLideN64's and Rice Video's. The Rice CRC is GlideHQ's
+(Hiroshi Morii, in GLideN64's `TxUtil.cpp`, GPL 2 or later), and the sizes it
+hashes (`ReverseDXT`, `CalculateMaxCI`, the tile and block dimensions) are Rice
+Video's (mupen64plus-video-rice, GPL 2 or later). Its header says so; see
+[the licenses](../README.md#license) for what that means for builds.
+
+RecompFrontend (`recompfrontend.patch`): mouse buttons can be bound, with the
+keyboard's controls (and in single player with the controller's too, as both are
+read then). recompinput already had a mouse input type, but reading it
+was left to do (`// TODO mouse support`). While binding a keyboard control, a
+mouse button press is bound (the click that starts binding has gone by by then;
+Escape still cancels). The buttons' state is read with the keyboard's each poll
+(`SDL_GetMouseState`), so, like the keyboard, they don't reach the game while a
+menu is open. They're shown as PromptFont's mouse glyphs: left, middle and
+right, and numbers from the side buttons (4, 5) on.
+
+RecompFrontend also lets the game take files the mod loader doesn't, for the
+GLideN64 texture packs: `register_mod_file_extension` has the mod installer
+(Install Mods, or files dropped on the Mods menu) copy a file with that extension
+(`.htc`) into the mods folder as it is, where it rejected anything but a zip, and
+`register_mod_scan_callback` is called before the Mods menu rescans the mods
+folder (its refresh button, which also follows an install), where the game starts
+unpacking a new `.htc`.
 
 ## Audio
 
@@ -312,7 +403,26 @@ window, recompui's renderer (RT64 plus the menus drawn over it), recompinput for
 the keyboard and controllers, and the launcher entry (`supported_games`, which
 recompui declares extern). `conker_config.cpp` sets up the settings tabs and
 Conker's control descriptions, and `audio_output.cpp` plays the sound at the
-Sound tab's volume. `patches/` holds the headers recompui includes for the
+Sound tab's volume. `cutscene_aspect.cpp` is the Graphics tab's Cutscene Aspect
+Ratio: with 4:3, cutscenes (anything the cutscene system plays, during which the
+player can't move: the game marks no difference between a story scene and a B
+pad's hint) get black bars over the picture beyond the 4:3 frame, drawn at the
+end of the frame's display list by a call to a list of its own. The picture
+itself stays widescreen: switching the renderer's aspect ratio instead made RT64
+remake every framebuffer at each switch, and a player's game crashed there in
+fullscreen at 4K (issue #21). `texture_packs.cpp` registers RT64 texture packs (`.rtz`
+files and folders with an `rt64.json`) with the mod loader and adds the Texture
+Packs settings tab, and `gliden64_packs.cpp` unpacks GLideN64 texture caches
+(`.htc`) in the mods folder into packs RT64 matches by their Rice names (see RT64's
+changes above). `mouse_camera.cpp`
+is a free orbit camera around Conker, turned by the mouse and, with Right Stick:
+Free Camera, the right stick, which then presses no C-buttons while it turns it
+(`frontend.cpp`); its settings, with Camera: Field of View, are in
+`look_aim.cpp`. `field_of_view.cpp` widens the normal camera's field of view as
+func_1510B128 sets it, and works the level's cull scales out for the wider view.
+`fps_counter.cpp` is the Graphics tab's Show FPS: a corner counter of the frames
+RT64 presented and the game's own, a context of its own that takes no input.
+`patches/` holds the headers recompui includes for the
 game-side patch code that mods will use. `null_renderer.cpp` is used with
 `--headless`, and in a build configured with `-DCONKER_RT64=OFF` (no window, input
 or sound). On Linux the window build creates the SDL window with
@@ -361,7 +471,6 @@ health, infinite lives and a full wallet, each an option.
 
 ## Next steps
 
-1. Texture generation for CBFD (pass the CPU-computed normals through to RT64).
-2. Play further into the game: saves (EEPROM), rumble, the other microcode build.
-3. Play-testing on Linux with a real GPU driver (so far only WSL with software
+1. Play further into the game: saves (EEPROM), rumble, the other microcode build.
+2. Play-testing on Linux with a real GPU driver (so far only WSL with software
    Vulkan, where the sound crackles while rendering loads the CPU).

@@ -1,7 +1,10 @@
 // The settings menu (recompui's config tabs) for the RT64 build.
 
 #include <filesystem>
+#include <string>
+#include <vector>
 
+#include "ultramodern/config.hpp"
 #include "recompui/config.h"
 #include "recompinput/recompinput.h"
 #include "util/file.h"
@@ -9,6 +12,42 @@
 #include "conker.hpp"
 
 namespace {
+    // Cutscene Aspect Ratio (cutscene_aspect.cpp), on the Graphics tab.
+    const std::string cutscene_aspect_id = "cutscene_aspect";
+    enum class CutsceneAspect : uint32_t { Expand, Original };
+    // Show FPS (fps_counter.cpp), on the Graphics tab.
+    const std::string show_fps_id = "show_fps";
+    enum class ShowFps : uint32_t { Off, On };
+
+    void add_graphics_options(recomp::config::Config& config) {
+        static const std::vector<recomp::config::ConfigOptionEnumOption> choices = {
+            {CutsceneAspect::Expand, "Expand", "Expand"},
+            {CutsceneAspect::Original, "Original", "4:3"},
+        };
+        config.add_enum_option(cutscene_aspect_id, "Cutscene Aspect Ratio",
+            "The aspect ratio of cutscenes: story scenes, conversations, B pads' hints and Conker's thoughts, "
+            "whenever the game plays one and you can't move. "
+            "<recomp-color primary>Expand</recomp-color> shows them as wide as the rest of the game, where characters "
+            "waiting for their cue can sometimes be seen beside the original picture. "
+            "<recomp-color primary>4:3</recomp-color> shows them as on the N64, with black bars at the sides, "
+            "and the game goes on in widescreen after each one.",
+            choices, CutsceneAspect::Expand);
+        config.add_option_disable_dependency(cutscene_aspect_id,
+            recompui::config::graphics::options::ar_option, ultramodern::renderer::AspectRatio::Original);
+
+        static const std::vector<recomp::config::ConfigOptionEnumOption> fps_choices = {
+            {ShowFps::Off, "Off", "Off"},
+            {ShowFps::On, "On", "On"},
+        };
+        config.add_enum_option(show_fps_id, "Show FPS",
+            "Shows the frame rate in the top-right corner while playing, to spot slowdowns. "
+            "<recomp-color primary>FPS</recomp-color> is the frames drawn to the screen each second (with interpolation, "
+            "more than the game makes): a drop there is the PC falling behind. "
+            "<recomp-color primary>Game</recomp-color> is the frames the game itself makes, up to 30: a drop there with FPS "
+            "steady is the game's own slowdown, as on the N64.",
+            fps_choices, ShowFps::Off);
+    }
+
     void set_control_descriptions() {
         using recompinput::GameInput;
         using recompinput::set_game_input_description;
@@ -41,16 +80,20 @@ void conker::init_config() {
         std::filesystem::create_directories(app_folder);
     }
 
+    // The General tab's rumble strength and gyro and mouse sensitivities are added by rumble.cpp and
+    // look_aim.cpp instead, with the same ids, so each sits with the settings it goes with: rumble,
+    // then the camera and aiming with the stick, the mouse and gyro. Mouse sensitivity defaults to 0,
+    // which leaves the mouse, and the cursor, alone.
     recompui::config::GeneralTabOptions general_options{};
-    general_options.has_rumble_strength = true;
-    // Used by the look mode (look_aim.cpp). Mouse sensitivity defaults to 0, which leaves the
-    // mouse, and the cursor, alone.
-    general_options.has_gyro_sensitivity = true;
-    general_options.has_mouse_sensitivity = true;
+    general_options.has_rumble_strength = false;
+    general_options.has_gyro_sensitivity = false;
+    general_options.has_mouse_sensitivity = false;
     auto& general_config = recompui::config::create_general_tab(general_options);
+    conker::rumble::add_options(general_config);
     conker::look_aim::add_options(general_config);
 
-    recompui::config::create_graphics_tab();
+    add_graphics_options(recompui::config::create_graphics_tab());
+    conker::texture_packs::add_tab();
 
     set_control_descriptions();
     recompui::config::create_controls_tab();
@@ -60,4 +103,14 @@ void conker::init_config() {
     recompui::config::create_mods_tab();
 
     recompui::config::finalize();
+}
+
+bool conker::cutscene_aspect::in_4x3() {
+    const auto value = recompui::config::get_graphics_config().get_option_value(cutscene_aspect_id);
+    return static_cast<CutsceneAspect>(std::get<uint32_t>(value)) == CutsceneAspect::Original;
+}
+
+bool conker::fps_counter::enabled() {
+    const auto value = recompui::config::get_graphics_config().get_option_value(show_fps_id);
+    return static_cast<ShowFps>(std::get<uint32_t>(value)) == ShowFps::On;
 }

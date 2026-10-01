@@ -62,6 +62,7 @@ reviewed and applied with credit to you, as #37 and #47 were.
 | Hooks into the game's code (a call to host code at a given instruction) | `conker.toml`, with the code in `host/src/` |
 | The host: frontend, input, audio, settings, widescreen fixes | `host/src/` |
 | Changes to RT64 (the renderer) | `recomp/rt64.patch` |
+| Changes to RecompFrontend (menus, input binding) | `recomp/recompfrontend.patch` |
 | Changes to N64Recomp / N64ModernRuntime | `recomp/n64recomp.patch`, `recomp/n64modernruntime.patch` |
 | The game's symbols (names, addresses, sizes) | `recomp/conker.us.syms.toml`, `mods/syms/`, generated from the decompilation |
 | The decompilation | `conker/` |
@@ -106,6 +107,13 @@ change one:
 
 3. Check that it applies to a clean checkout of the pinned commit and builds.
 4. Explain the change in `recomp/README.md` ("Local changes to the tools").
+5. Keep licenses straight. Code taken or adapted from another project keeps its
+   license and credits, in a file of its own with a header saying so (as
+   `src/hle/rt64_rice_hash.cpp` in `rt64.patch` does for its GPL code), and the
+   license section of `README.md` and `.github/release/LICENSES.txt` say what it
+   means for builds. The GPL version 3 of the runtime (N64ModernRuntime) covers
+   the program as a whole, so such code must be compatible with it: MIT, BSD,
+   zlib, GPL version 2 *or later*, or GPL version 3 are; GPL version 2 *only* isn't.
 
 Prefer small changes that are easy to carry forward when a submodule is updated.
 

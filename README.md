@@ -34,6 +34,7 @@ yourself instead, read on.
   Zelda 64: Recompiled and Banjo: Recompiled).
 - Mod support (`.nrm` mods: function patches and hooks). Three mods are
   included: **Skip Intro**, **Skip Any Cutscene** and **Cheats**.
+- Texture packs (RT64's `.rtz`), for HD textures and other replacements.
 
 ## Status
 
@@ -232,6 +233,11 @@ Run `host/build/ConkerRecomp` (Linux and macOS) or `host\build-win\ConkerRecomp.
 - Default keyboard controls: move with WASD, A = Space, B = Left Shift,
   Z = Q, L = E, R = R, Start = Enter, C buttons = arrow keys, D-pad = IJKL.
   Everything can be remapped in Controls.
+- N64 pads and adapters for real N64 controllers (raphnet-tech's, Mayflash,
+  Hyperkin, the NSO and 8BitDo 64 controllers) are mapped from
+  `assets/controllerdb.txt`, with the C buttons as the right stick. A controller
+  SDL doesn't know can be given a mapping in the `SDL_GAMECONTROLLERCONFIG`
+  environment variable, which takes precedence.
 
 ## ROM hacks
 
@@ -276,6 +282,54 @@ The `.nrm` ends up in the mod's `build/` folder.
   each toggled in the mod's options.
 
 Writing your own is covered in [recomp/README.md](recomp/README.md#mods).
+
+### Texture packs
+
+Texture packs replace the game's textures with new ones, such as HD textures.
+They're RT64 texture packs, the same format as Zelda 64: Recompiled's and Banjo:
+Recompiled's: an `rt64.json` listing each texture's hash and its replacement
+image. Install a `.rtz` pack like a mod (the `mods` folder, or dropped onto the
+Mods menu), then pick it in **Settings > Texture Packs**, which turns it on and
+the other packs off. Packs installed while the game runs are listed there from
+the next start. Its default, **Set in the Mods Menu**, leaves them to the
+**Mods** menu instead, where several can be on at once (later ones in the list
+take precedence).
+
+GLideN64 texture packs (for Project64 and RetroArch) work too. Install the
+pack's `.htc` file the same way (**Install Mods** or dropped onto the Mods menu),
+or put it in the `mods` folder and start the game or press the Mods menu's
+refresh button: it's unpacked, once, into a pack folder beside it, with its
+progress shown (a large pack takes a minute or so), and turned on. It's then in
+the **Mods** menu, and listed in **Settings > Texture Packs**. GLideN64 names each texture by a
+different hash than RT64 (Rice's), which the game's RT64 works out as each
+texture is loaded. Only packs stored as RGBA8 are unpacked (not those built with
+texture compression).
+
+[`tools/texture_packs/gliden64_to_rt64.py`](tools/texture_packs/gliden64_to_rt64.py)
+makes a `.rtz` from a GLideN64 pack (a `.htc`, or a folder of
+`...#crc#format#size_all.png` files) to share:
+
+```sh
+python tools/texture_packs/gliden64_to_rt64.py pack.htc --out my_pack --name "My Pack" --author Me --rtz my_pack.rtz
+```
+
+Given folders of textures dumped while playing (RT64's developer mode, below:
+F1, **Start dumping textures**), it instead lists the dumped textures with
+RT64's hashes, as RT64 without live matching needs (see the tool).
+
+To make a pack from scratch, put a folder in `mods` with a `mod.json` (`"game_id": "conker"`,
+plus an `id`, `version`, `display_name`, `authors` and `minimum_recomp_version`)
+and an `rt64.json`:
+
+```json
+{ "configuration": { "configurationVersion": 3, "hashVersion": 5 }, "textures": [] }
+```
+
+With it enabled, and RT64's developer mode on (`"developer_mode": true` in
+`graphics.json` in the data folder), RT64's inspector (F1) shows each draw's
+texture hash and has a **Replace** button that picks an image and adds it to the
+folder's `rt64.json`. Zip the folder's contents (without `mod.json`) and rename
+it to `.rtz` to share it.
 
 ## How it works
 
@@ -336,7 +390,22 @@ Bug reports, fixes and patches are welcome: see [CONTRIBUTING.md](CONTRIBUTING.m
 ## License
 
 This project's own code is under the [MIT License](LICENSE). The submodules keep
-their own licenses. The game itself is not included and not covered by it.
+their own licenses, and a build combines them:
+
+- N64ModernRuntime (librecomp and ultramodern) is under the
+  [GPL, version 3](tools/N64ModernRuntime/COPYING). As the program includes it,
+  the program as a whole is distributed under the GPL version 3, which gives
+  everyone who gets it the right to its source: this repository, at the release's
+  tag. The release packages include the GPL's text (`LICENSE-GPL-3.0.txt`) and
+  [`LICENSES.txt`](.github/release/LICENSES.txt), which lists them.
+- RT64 is under the MIT License, but the live texture pack matching that
+  [`recomp/rt64.patch`](recomp/rt64.patch) adds (`src/hle/rt64_rice_hash.cpp`) is
+  under the GPL, version 2 or later: it imitates the Rice texture hashing of
+  GlideHQ (Hiroshi Morii, as in GLideN64) and Rice Video, both under the GPL
+  version 2 or later ([recomp/README.md](recomp/README.md#local-changes-to-the-tools)).
+  That's compatible with the GPL version 3.
+
+The game itself is not included and not covered by them.
 
 Conker's Bad Fur Day is © Rare Ltd. This project is not affiliated with or
 endorsed by Rare, Microsoft or Nintendo.

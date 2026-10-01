@@ -86,6 +86,8 @@ add_executable(ConkerRecomp
     src/mod_api.cpp
     src/rom_versions.cpp
     src/widescreen.cpp
+    src/cutscene_aspect.cpp
+    src/field_of_view.cpp
     src/interpolation.cpp
     src/render_fixes.cpp
     src/look_aim.cpp
@@ -161,7 +163,7 @@ if (CONKER_RT64)
     add_custom_command(TARGET ConkerRecomp POST_BUILD
         COMMAND ${CMAKE_COMMAND} -E copy_directory "${CMAKE_CURRENT_SOURCE_DIR}/assets" "$<TARGET_FILE_DIR:ConkerRecomp>/assets")
 
-    target_sources(ConkerRecomp PRIVATE src/frontend.cpp src/conker_config.cpp src/audio_output.cpp)
+    target_sources(ConkerRecomp PRIVATE src/frontend.cpp src/conker_config.cpp src/audio_output.cpp src/rumble.cpp src/fps_counter.cpp src/pad_mappings.cpp src/texture_packs.cpp src/gliden64_packs.cpp)
     # CONKER_RT64 selects the window build; the rest are what rt64 compiles its own headers with.
     target_compile_definitions(ConkerRecomp PRIVATE CONKER_RT64 HLSL_CPU)
     if (WIN32)

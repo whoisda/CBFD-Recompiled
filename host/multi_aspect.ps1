@@ -2,18 +2,21 @@
 # screen, to compare widescreen culling side by side. A controller drives every
 # window together (background input, in general.json, is on); the keyboard only
 # reaches the focused one.
-#   powershell -File host\multi_aspect.ps1 [-Aspects "16x9,21x9,32x9"] [-Height 300] [-Seconds N] [-Shots "20,40"]
+#   powershell -File host\multi_aspect.ps1 [-Aspects "16x9,21x9,32x9"] [-Height 300] [-Seconds N] [-Shots "20,40"] [-Env "NAME=value,NAME"]
 # Each window gets its own data folder, host\build-win\instances\<aspect>: links to
 # the build, and copies of the settings, save and ROMs kept next to the build (the
 # portable data in host\build-win, or else %LOCALAPPDATA%\ConkerRecompiled), set to
 # windowed. So the instances never touch the player's own saves or each other's.
 # -Seconds starts the game directly (no launcher) and quits after that long; -Shots
 # saves a screenshot of every window at those seconds (instances\<aspect>\shotN.png).
+# -Env sets environment variables for every window (a name alone sets it to 1), such
+# as the debug switches; anything they log lands in the window's instance folder.
 param(
     [string]$Aspects = "16x9,21x9,32x9",
     [int]$Height = 300,
     [int]$Seconds = 0,
-    [string]$Shots = ""
+    [string]$Shots = "",
+    [string]$Env = ""
 )
 $ErrorActionPreference = "Stop"
 $build = Join-Path $PSScriptRoot "build-win"
@@ -70,6 +73,14 @@ function New-Instance([string]$name) {
         (Get-Content -LiteralPath $graphics -Raw) -replace '"wm_option":\s*"[A-Za-z]+"', '"wm_option": "Windowed"' | Set-Content -LiteralPath $graphics -Encoding utf8 -NoNewline
     }
     return $dir
+}
+
+# The windows inherit this script's environment, which ends with it.
+foreach ($pair in ($Env.Split(",") | Where-Object { $_.Trim() })) {
+    $name, $value = $pair.Trim().Split("=", 2)
+    if ($null -eq $value) { $value = "1" }
+    Set-Item -Path "Env:$name" -Value $value
+    Write-Output "Env: $name=$value"
 }
 
 $y = 0

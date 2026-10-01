@@ -1,0 +1,30 @@
+Licenses
+========
+
+Conker's Bad Fur Day: Recompiled is built from code under several licenses. Its
+complete source is at https://github.com/sciaschi/CBFD-Recompiled (the tag
+named after this release), with the changes it makes to the tools it uses in
+recomp/*.patch.
+
+- This project's own code: the MIT License (LICENSE).
+
+- N64ModernRuntime (librecomp and ultramodern), which runs the recompiled game:
+  the GNU General Public License, version 3 (LICENSE-GPL-3.0.txt).
+  https://github.com/N64Recomp/N64ModernRuntime
+  As the program includes it, the program as a whole is distributed under the
+  GPL version 3, which also gives you the right to its source (above).
+
+- RT64, the renderer: the MIT License. https://github.com/rt64/rt64
+  Its live texture pack matching (src/hle/rt64_rice_hash.cpp, added by
+  recomp/rt64.patch) is under the GNU General Public License, version 2 or
+  later: it imitates the Rice texture hashing of GlideHQ (Hiroshi Morii, as in
+  GLideN64's src/GLideNHQ/TxUtil.cpp) and of Rice Video (Rice1964,
+  mupen64plus-video-rice), both under the GPL version 2 or later.
+
+- N64Recomp: the MIT License. https://github.com/N64Recomp/N64Recomp
+
+- RecompFrontend (the launcher and menus) and the other libraries included
+  (such as SDL2) keep their own licenses; see their repositories.
+
+Conker's Bad Fur Day is (c) Rare Ltd. This project is not affiliated with or
+endorsed by Rare, Microsoft or Nintendo, and contains no game data.

@@ -23,6 +23,14 @@ developer ID, so macOS blocks it the first time: open it once, then in System
 Settings > Privacy & Security choose Open Anyway. Or, in Terminal, run
 xattr -dr com.apple.quarantine ConkerRecomp.app before opening it.
 
+Texture packs: install a .rtz pack, or a GLideN64 pack's .htc file, with the Mods
+menu's Install Mods button (or drop it onto the Mods menu, or put it in the mods
+folder), and pick it in Settings > Texture Packs. A .htc is unpacked the first
+time, which takes a minute or so for a large pack.
+
+Licenses: see LICENSES.txt. The program as a whole is under the GNU GPL version 3
+(LICENSE-GPL-3.0.txt), with its source at the GitHub page above.
+
 Saves, settings and the stored ROM are kept in your user folder, not here, so a
 newer version can be unpacked anywhere.
 

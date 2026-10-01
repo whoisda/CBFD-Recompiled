@@ -145,6 +145,39 @@ func = "func_100095A0"
 before_vram = 0x100095D0
 text = "{ extern void osAiGetLength_recomp(uint8_t*, recomp_context*); osAiGetLength_recomp(rdram, ctx); ctx->r3 = ctx->r2; }"
 
+# func_10008CE8 (start a song on a sequence player) busy-waits for the audio thread
+# to stop the player, which on the N64 preempts it; here the loop has to yield for the
+# audio thread to run (issue #66). A hook at the head of each of its two wait loops,
+# before the n_alCSPGetState call (host/src/ultra_extras.cpp, conker_spin_wait_pass).
+[[patches.hook]]
+func = "func_10008CE8"
+before_vram = 0x10008D44
+text = "{ extern void conker_spin_wait_pass(uint8_t*, recomp_context*); conker_spin_wait_pass(rdram, ctx); }"
+
+[[patches.hook]]
+func = "func_10008CE8"
+before_vram = 0x10008D98
+text = "{ extern void conker_spin_wait_pass(uint8_t*, recomp_context*); conker_spin_wait_pass(rdram, ctx); }"
+
+# A song just started reads as stopped until the audio thread takes it up, and the music manager
+# took such a player for free while it played on (issue #66). So it reads as playing until then
+# (host/src/ultra_extras.cpp): marked when func_10008CE8 starts the song, the mark cleared when
+# func_10008F24 stops the player, and func_1000853C (a player's state) answers "playing" meanwhile.
+[[patches.hook]]
+func = "func_10008CE8"
+before_vram = 0x10008EC4
+text = "{ extern void conker_song_started(uint8_t*, recomp_context*); conker_song_started(rdram, ctx); }"
+
+[[patches.hook]]
+func = "func_1000853C"
+before_vram = 0x10008560
+text = "{ extern void conker_song_state(uint8_t*, recomp_context*); conker_song_state(rdram, ctx); }"
+
+[[patches.hook]]
+func = "func_10008F24"
+before_vram = 0x10008F24
+text = "{ extern void conker_song_stopped(uint8_t*, recomp_context*); conker_song_stopped(rdram, ctx); }"
+
 # func_1000480C: Rare's PIO copy from cartridge ROM (used by the ROM loader
 # func_10004514). It polls PI_STATUS, then reads the cartridge word by word
 # through (osRomBase | addr | 0xA0000000).
@@ -335,6 +368,23 @@ func = "func_1501B22C"
 before_vram = 0x1501B308
 text = "{ extern void conker_widen_frustum(uint8_t*, recomp_context*); conker_widen_frustum(rdram, ctx); }"
 
+# Widescreen: func_151103C8 fills the camera's view with its background colour up to the scissor's
+# edge, which RT64 lines up with the window's, leaving a thin line at the right edge where nothing
+# covers it (the screens before the N64 logo). Just before the fill ($a3 its right edge), it ends a
+# pixel short (host/src/widescreen.cpp).
+[[patches.hook]]
+func = "func_151103C8"
+before_vram = 0x15110458
+text = "{ extern void conker_camera_background_fill(uint8_t*, recomp_context*); conker_camera_background_fill(rdram, ctx); }"
+
+# Camera: Field of View (host/src/field_of_view.cpp): func_1510B128 has just stored
+# the camera's horizontal and vertical fields of view ($v0 the camera, $s0 its offset);
+# the projection, frustum and culls are worked out from them after this.
+[[patches.hook]]
+func = "func_1510B128"
+before_vram = 0x1510B1A8
+text = "{ extern void conker_field_of_view(uint8_t*, recomp_context*); conker_field_of_view(rdram, ctx); }"
+
 # Widescreen: the scale the level's culls compare view-space x with is set for
 # the 4:3 view too. Widen it to the window (host/src/widescreen.cpp).
 [[patches.hook]]
@@ -440,6 +490,22 @@ func = "func_15120158"
 before_vram = 0x15120A98
 text = "{ extern void conker_look_stick_pitch(uint8_t*, recomp_context*); conker_look_stick_pitch(rdram, ctx); }"
 
+# In some states (0x9, 0x15, 0x26, 0x37-0x3B, and while flag 2 of the camera's + 0x5F0 is set) the
+# look mode doesn't keep its yaw: it works it out each frame from the way Conker faces (his object's
+# + 0x7A) less an aiming angle the stick turns (a 16-bit angle at + 0x12 of the camera's + 0x3D4;
+# scaled by 0.35 on the second path). These two mark each path (0x15120908 and 0x15120978, their
+# first instruction), so the mouse and gyro turn that angle too (issue #61: the dual SMGs' aim
+# sprang back to the middle).
+[[patches.hook]]
+func = "func_15120158"
+before_vram = 0x15120908
+text = "{ extern void conker_look_yaw_from_facing(uint8_t*, recomp_context*); conker_look_yaw_from_facing(rdram, ctx); }"
+
+[[patches.hook]]
+func = "func_15120158"
+before_vram = 0x15120978
+text = "{ extern void conker_look_yaw_from_facing_scaled(uint8_t*, recomp_context*); conker_look_yaw_from_facing_scaled(rdram, ctx); }"
+
 [[patches.hook]]
 func = "func_15120158"
 before_vram = 0x15120B44
@@ -535,3 +601,39 @@ text = "{ extern void conker_depth_copy_camera(uint8_t*, recomp_context*); conke
 func = "func_151742EC"
 before_vram = 0x1517432C
 text = "{ extern void conker_depth_copy_probes(uint8_t*, recomp_context*); conker_depth_copy_probes(rdram, ctx); }"
+
+# Speech bubbles past the screen's left edge (func_15095D34 draws each piece of one; issue #59). The
+# game clamps a rectangle at 0 and moves its texture on, which cut the bubble at the 4:3 edge in
+# widescreen. The piece is drawn shifted right, so nothing is clamped, then moved back as RT64's
+# extended rectangle (host/src/widescreen.cpp). Its extended GBI is enabled early in the frame, in
+# place of the pipe sync func_1501A490 writes for each camera's pass (func_15019464 at 0x150194F8,
+# $v0 just after that sync and the scissor); func_1501878C at 0x15018920 starts the frame's list.
+[[patches.hook]]
+func = "func_1501878C"
+before_vram = 0x15018920
+text = "{ extern void conker_frame_dl_begin(uint8_t*, recomp_context*); conker_frame_dl_begin(rdram, ctx); }"
+
+# Cutscene Aspect Ratio at 4:3 (host/src/cutscene_aspect.cpp): at the end of the frame's display
+# list, just before func_1501878C writes its full sync ($s1 points to the list's pointer), a call to
+# a list of our own that draws black bars over the picture beyond the 4:3 frame.
+[[patches.hook]]
+func = "func_1501878C"
+before_vram = 0x15018C8C
+text = "{ extern void conker_frame_dl_end(uint8_t*, recomp_context*); conker_frame_dl_end(rdram, ctx); }"
+
+[[patches.hook]]
+func = "func_15019464"
+before_vram = 0x150194F8
+text = "{ extern void conker_camera_pass_sync(uint8_t*, recomp_context*); conker_camera_pass_sync(rdram, ctx); }"
+
+# After the piece's left edge is loaded ($f12, D_800D2C78; its right edge is that plus a width),
+# and where both of its returns meet ($v0 the end of what it wrote).
+[[patches.hook]]
+func = "func_15095D34"
+before_vram = 0x15095D5C
+text = "{ extern void conker_bubble_begin(uint8_t*, recomp_context*); conker_bubble_begin(rdram, ctx); }"
+
+[[patches.hook]]
+func = "func_15095D34"
+before_vram = 0x15096294
+text = "{ extern void conker_bubble_end(uint8_t*, recomp_context*); conker_bubble_end(rdram, ctx); }"
