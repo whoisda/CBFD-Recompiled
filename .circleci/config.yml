@@ -15,11 +15,18 @@
 #      in the CircleCI project go to Project Settings > Environment Variables
 #      and add:
 #        ROM_REPO         owner/name of the private ROM repository
-#        ROM_REPO_TOKEN   a fine-grained personal access token with read-only
+#      ROM_REPO_TOKEN   a fine-grained personal access token with read-only
 #                         "Contents" access to that repository alone
 #      (Same layout as the GitHub workflows' ROM_REPO / ROM_REPO_TOKEN secrets.)
-#   3. Push: the build runs, and ConkerRecomp-macOS-Sonoma.zip appears under the
-#      job's Artifacts tab.
+#      Optionally, for automatic upload of the finished zip to a GitHub release
+#      (see the "Upload to GitHub release" step):
+#        GITHUB_TOKEN     a token with read+write "Contents" access to THIS
+#                         repository (fine-grained: Contents read+write; or a
+#                         classic token with repo scope). Without it the step is
+#                         skipped and the zip stays in CircleCI Artifacts.
+#   3. Push: the build runs, ConkerRecomp-macOS-Sonoma.zip appears under the
+#      job's Artifacts tab, and (if GITHUB_TOKEN is set) as a prerelease tagged
+#      sonoma-build-N on your fork's Releases page.
 #
 # No third-party orbs are used: checkout, run and store_artifacts only.
 version: 2.1
@@ -62,20 +69,17 @@ jobs:
             xcrun -sdk macosx metal --version
 
       - run:
-          name: Update Homebrew
-          # The Xcode 15.4 image ships a 2024-era Homebrew whose catalogue
-          # predates the sdl3 formula (and the sdl2-compat switch), so a fresh
-          # catalogue is required before installing below. This keeps the
-          # Sonoma host while getting current formulae and arm64_sonoma bottles.
-          no_output_timeout: 15m
-          command: |
-            brew update
-            brew --version
-
-      - run:
           name: Install dependencies
+          # NOTE: do NOT run `brew update` on this image. The Xcode 15.4 image
+          # ships a 2024-era Homebrew whose formulae and bottles match its old
+          # Xcode 15.4 toolchain (HOMEBREW_NO_AUTO_UPDATE below pins it there).
+          # A fresh catalogue has no Sonoma bottles left for core formulae, so
+          # everything falls back to building from source, which this old
+          # toolchain cannot do. The 2024 catalogue's sdl2 is genuine SDL2 (not
+          # sdl2-compat), so no sdl3 exists or is needed: package_macos.sh
+          # bundles SDL3 only when it finds one.
           command: |
-            brew install git python3 cmake ninja pkg-config sdl2 sdl3 freetype dylibbundler
+            brew install git python3 cmake ninja pkg-config sdl2 freetype dylibbundler gh
             # build.sh checks for these the same way on macOS.
             for cmd in git python3 cmake ninja pkg-config xcrun; do
               command -v "$cmd" >/dev/null 2>&1 || { echo "missing: $cmd"; exit 1; }
@@ -83,6 +87,7 @@ jobs:
             pkg-config --exists sdl2 || { echo "missing: sdl2"; exit 1; }
             pkg-config --exists freetype2 || { echo "missing: freetype2"; exit 1; }
             command -v dylibbundler >/dev/null 2>&1 || { echo "missing: dylibbundler"; exit 1; }
+            command -v gh >/dev/null 2>&1 || { echo "missing: gh"; exit 1; }
 
       - run:
           name: Get the ROM
@@ -139,6 +144,29 @@ jobs:
             ls -la package/
             # Report what the app actually requires (must say 14.x for Sonoma).
             otool -l "$out/ConkerRecomp.app/Contents/MacOS/ConkerRecomp" | grep -A3 LC_BUILD_VERSION | head -8 || true
+
+      - run:
+          name: Upload to GitHub release
+          command: |
+            # Without GITHUB_TOKEN (see setup at the top of this file) there is
+            # nothing to upload with: skip, leaving the zip in job Artifacts.
+            if [ -z "$GITHUB_TOKEN" ]; then
+              echo "GITHUB_TOKEN not set: skipping GitHub release upload."
+              echo "The zip is still available under this job's Artifacts tab."
+              exit 0
+            fi
+            export GH_TOKEN="$GITHUB_TOKEN"
+            repo="$CIRCLE_PROJECT_USERNAME/$CIRCLE_PROJECT_REPONAME"
+            tag="sonoma-build-$CIRCLE_BUILD_NUM"
+            asset="package/ConkerRecomp-macOS-Sonoma.zip"
+            if ! gh release view "$tag" --repo "$repo" >/dev/null 2>&1; then
+              gh release create "$tag" --repo "$repo" \
+                --title "Sonoma build $CIRCLE_BUILD_NUM" \
+                --notes "Automated CircleCI Sonoma build of $CIRCLE_SHA1. Unsigned (ad-hoc signature only): right-click Open on first launch." \
+                --prerelease
+            fi
+            gh release upload "$tag" "$asset" --repo "$repo" --clobber
+            echo "Uploaded $asset to https://github.com/$repo/releases/tag/$tag"
 
       - store_artifacts:
           path: package/ConkerRecomp-macOS-Sonoma.zip

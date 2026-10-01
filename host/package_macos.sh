@@ -3,8 +3,9 @@
 # ConkerRecomp.app, which runs without Homebrew:
 #   sh host/package_macos.sh [out_dir]      (default: host/build)
 # The app holds the executable, assets/ in its Resources (where recompui looks on
-# macOS), and in Frameworks the Homebrew libraries it uses: SDL2 (sdl2-compat), the
-# SDL3 that sdl2-compat loads next to itself, and FreeType. It contains no ROM and no
+# macOS), and in Frameworks the Homebrew libraries it uses: SDL2 (sdl2-compat or
+# genuine SDL2), the SDL3 that sdl2-compat loads next to itself (skipped with a
+# genuine SDL2), and FreeType. It contains no ROM and no
 # game data. It's signed ad hoc, so macOS asks before opening it the first time.
 # Needs dylibbundler (brew install dylibbundler).
 set -e
@@ -41,14 +42,18 @@ rm -rf "$(dirname "$ICONSET")"
 dylibbundler -of -b -x "$APP/Contents/MacOS/ConkerRecomp" -d "$APP/Contents/Frameworks" \
     -p @executable_path/../Frameworks/ >/dev/null
 # sdl2-compat loads SDL3 at run time from its own folder (@loader_path/libSDL3.dylib),
-# so dylibbundler can't see that one: add it by hand.
-SDL3=$(brew --prefix sdl3)/lib/libSDL3.0.dylib
-[ -f "$SDL3" ] || fail "no SDL3 at $SDL3 (brew install sdl3)."
-cp "$SDL3" "$APP/Contents/Frameworks/libSDL3.dylib"
-chmod u+w "$APP/Contents/Frameworks/libSDL3.dylib"
-install_name_tool -id @executable_path/../Frameworks/libSDL3.dylib "$APP/Contents/Frameworks/libSDL3.dylib" 2>/dev/null
-dylibbundler -of -b -x "$APP/Contents/Frameworks/libSDL3.dylib" -d "$APP/Contents/Frameworks" \
-    -p @executable_path/../Frameworks/ >/dev/null
+# so dylibbundler can't see that one: add it by hand. A genuine SDL2 (rather than
+# sdl2-compat, e.g. from older Homebrew) needs no SDL3: skip it then.
+SDL3=$(brew --prefix sdl3 2>/dev/null || true)/lib/libSDL3.0.dylib
+if [ -f "$SDL3" ]; then
+    cp "$SDL3" "$APP/Contents/Frameworks/libSDL3.dylib"
+    chmod u+w "$APP/Contents/Frameworks/libSDL3.dylib"
+    install_name_tool -id @executable_path/../Frameworks/libSDL3.dylib "$APP/Contents/Frameworks/libSDL3.dylib" 2>/dev/null
+    dylibbundler -of -b -x "$APP/Contents/Frameworks/libSDL3.dylib" -d "$APP/Contents/Frameworks" \
+        -p @executable_path/../Frameworks/ >/dev/null
+else
+    echo "  no SDL3 found (genuine SDL2, not sdl2-compat): skipping"
+fi
 
 # Nothing may still point into Homebrew.
 for f in "$APP/Contents/MacOS/ConkerRecomp" "$APP"/Contents/Frameworks/*.dylib; do
